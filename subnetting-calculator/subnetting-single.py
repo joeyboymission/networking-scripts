@@ -1,5 +1,11 @@
 import random
 
+def print_header():
+    print("\n" + "="*50)
+    print("Script Title: IPv4 Subnet Calculator (Single Subnet)")
+    print("Author: JOIBOI")
+    print("="*50 + "\n")
+
 # Function to convert IP or subnet mask to binary
 def to_binary(ip):
     return ".".join([bin(int(octet))[2:].zfill(8) for octet in ip.split(".")])
@@ -87,6 +93,8 @@ def subnet_details(ip, cidr):
 
 # Main program
 def main():
+    print_header()
+    
     while True:
         print("Please Enter the IP Address:")
         ip = input("> ")
@@ -100,7 +108,7 @@ def main():
             print("Invalid IP address. Please enter a valid IP address (e.g., 192.168.1.1)")
     
     while True:
-        print("What type? Subnet (1) or CIDR (2):")
+        print("\nWhat type? Subnet (1) or CIDR (2):")
         choice = input("> ")
         if choice in ["1", "2"]:
             break
@@ -108,39 +116,43 @@ def main():
     
     if choice == "1":
         while True:
-            print("Enter the Subnet Mask:")
+            print("\nEnter the Subnet Mask:")
             subnet_mask = input("> ")
             try:
                 octets = subnet_mask.split('.')
                 if len(octets) == 4 and all(0 <= int(octet) <= 255 for octet in octets):
                     cidr = mask_to_cidr(subnet_mask)
-                    print(f"Equivalent CIDR: /{cidr}")
+                    print(f"\nEquivalent CIDR: /{cidr}")
                     break
                 print("Invalid subnet mask. Please enter a valid subnet mask (e.g., 255.255.255.0)")
             except ValueError:
                 print("Invalid subnet mask. Please enter a valid subnet mask (e.g., 255.255.255.0)")
     elif choice == "2":
         while True:
-            print("Enter the CIDR: /")
+            print("\nEnter the CIDR: /")
             try:
                 cidr = int(input("> "))
                 if 8 <= cidr <= 32:
                     subnet_mask = cidr_to_mask(cidr)
-                    print(f"Equivalent Subnet Mask: {subnet_mask}")
+                    print(f"\nEquivalent Subnet Mask: {subnet_mask}")
                     break
                 print("Invalid CIDR. Must be between 8 and 32.")
             except ValueError:
                 print("Invalid input. Please enter a number between 8 and 32.")
     
     details = subnet_details(ip, cidr)
+    print("\n" + "-"*50)
+    print("SUBNET CALCULATION RESULTS")
+    print("-"*50)
     print(f"Binary Notation: {details['binary']}\n")
-    print(f"- Possible Address (2^n): {details['possible']}")
-    print(f"- Usable Address (2^n-2): {details['usable']}")
-    print(f"- Network Address: {details['network']}")
-    print(f"- Broadcast Address: {details['broadcast']}")
-    print(f"- Range of Usable Address: {details['range'][0]} - {details['range'][1]}")
-    print(f"- Number of Usable Address: {details['num_usable']}")
-    print(f"- Number of Subnet: {details['num_subnets']}")
+    print(f"Network Details:")
+    print(f"├─ Possible Address (2^n): {details['possible']}")
+    print(f"├─ Usable Address (2^n-2): {details['usable']}")
+    print(f"├─ Network Address: {details['network']}")
+    print(f"├─ Broadcast Address: {details['broadcast']}")
+    print(f"├─ Range of Usable Address: {details['range'][0]} - {details['range'][1]}")
+    print(f"├─ Number of Usable Address: {details['num_usable']}")
+    print(f"└─ Number of Subnet: {details['num_subnets']}")
     
     while True:
         print("\nPlease specify how many devices:")
@@ -153,7 +165,7 @@ def main():
             print("Invalid input. Please enter a valid number.")
     
     while True:
-        print("Randomized (1) or Sequence (2):")
+        print("\nRandomized (1) or Sequence (2):")
         mode = input("> ")
         if mode in ["1", "2"]:
             break
@@ -169,15 +181,19 @@ def main():
             network = f"{(subnet_start >> 24) & 255}.{(subnet_start >> 16) & 255}.{(subnet_start >> 8) & 255}.{subnet_start & 255}"
             broadcast = f"{(subnet_end >> 24) & 255}.{(subnet_end >> 16) & 255}.{(subnet_end >> 8) & 255}.{subnet_end & 255}"
             first_usable, last_usable = usable_ip_range(network, broadcast)
-            print(f"\nSubnet {chr(65 + subnet_idx)}: (Usable IP range {first_usable} - {last_usable} | Number of Usable Address: {details['usable']})")
+            print(f"\nSubnet {chr(65 + subnet_idx)}:")
+            print(f"├─ Usable IP range: {first_usable} - {last_usable}")
+            print(f"└─ Number of Usable Address: {details['usable']}")
             ips = generate_usable_ips(first_usable, last_usable, min(num_devices, details['usable']), mode)
             for i, ip in enumerate(ips, 1):
-                print(f"IP {chr(64 + i)}: {ip}")
+                print(f"   └─ IP {chr(64 + i)}: {ip}")
     else:
-        print(f"\nSubnet: (Usable IP range {details['range'][0]} - {details['range'][1]} | Number of Usable Address: {details['num_usable']})")
+        print(f"\nSubnet:")
+        print(f"├─ Usable IP range: {details['range'][0]} - {details['range'][1]}")
+        print(f"└─ Number of Usable Address: {details['num_usable']}")
         ips = generate_usable_ips(details['range'][0], details['range'][1], num_devices, mode)
         for i, ip in enumerate(ips, 1):
-            print(f"IP {chr(64 + i)}: {ip}")
+            print(f"   └─ IP {chr(64 + i)}: {ip}")
 
 if __name__ == "__main__":
     main()

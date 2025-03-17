@@ -1,5 +1,11 @@
 import random
 
+def print_header():
+    print("\n" + "="*50)
+    print("Script Title: IPv4 Subnet Calculator (Multiple Subnets)")
+    print("Author: JOIBOI")
+    print("="*50 + "\n")
+
 # Helper function to convert IP address to integer
 def ip_to_int(ip):
     return sum([int(octet) << (24 - 8 * i) for i, octet in enumerate(ip.split("."))])
@@ -76,11 +82,12 @@ def generate_usable_ips(usable_start, usable_end, num_devices, mode):
 
 # Main function
 def main():
-    print("=== VLSM IP Address Calculator ===")
+    print_header()
     
     # Get base IP address
     while True:
-        base_ip = input("Please Enter the IP Address: ")
+        print("Please Enter the IP Address:")
+        base_ip = input("> ")
         try:
             octets = base_ip.split('.')
             if len(octets) == 4 and all(octet.isdigit() and 0 <= int(octet) <= 255 for octet in octets):
@@ -91,7 +98,8 @@ def main():
 
     # Choose input type: Subnet or CIDR
     while True:
-        choice = input("Subnet (1) or CIDR (2)?: ")
+        print("\nSubnet (1) or CIDR (2)?")
+        choice = input("> ")
         if choice in ["1", "2"]:
             break
         print("Invalid choice. Enter 1 for Subnet or 2 for CIDR.")
@@ -99,19 +107,13 @@ def main():
     # Get number of subnets
     while True:
         try:
-            num_subnets = int(input("How many multiple subnets on a network?: "))
+            print("\nHow many multiple subnets on a network?")
+            num_subnets = int(input("> "))
             if num_subnets > 0:
                 break
             print("Please enter a positive integer.")
         except ValueError:
             print("Invalid input. Enter a whole number.")
-
-    # Get assignment mode
-    while True:
-        mode = input("Randomized (1) or Sequence (2)?: ")
-        if mode in ["1", "2"]:
-            break
-        print("Invalid choice. Enter 1 for Randomized or 2 for Sequence.")
 
     # Collect subnet masks or CIDRs
     subnets = []
@@ -120,8 +122,9 @@ def main():
         subnet_letter = chr(65 + i)  # A, B, C, etc.
         while True:
             try:
-                prompt = f"Subnet {subnet_letter}: " + ("Enter subnet mask: " if choice == "1" else "Enter CIDR (e.g., /24): ")
-                input_str = input(prompt)
+                prompt = f"\nSubnet {subnet_letter}: " + ("Enter subnet mask: " if choice == "1" else "Enter CIDR (e.g., /24): ")
+                print(prompt)
+                input_str = input("> ")
                 cidr = parse_mask_or_cidr(input_str)
                 
                 # Calculate subnet details
@@ -140,29 +143,42 @@ def main():
 
         # Display equivalent CIDR or subnet mask and binary notation
         if choice == "1":
-            print(f"Equivalent CIDR: /{details['cidr']}")
+            print(f"\nEquivalent CIDR: /{details['cidr']}")
             print(f"Binary Notation: {to_binary(details['mask'])}")
         else:
-            print(f"Equivalent Subnet Mask: {details['mask']}")
+            print(f"\nEquivalent Subnet Mask: {details['mask']}")
             print(f"Binary Notation: {to_binary(details['mask'])}")
 
     # Display results
-    print("\n=== RESULT ===")
+    print("\n" + "="*50)
+    print("SUBNET CALCULATION RESULTS")
+    print("="*50)
+    
+    # Process each subnet
     for i, details in enumerate(subnets):
         subnet_letter = chr(65 + i)
         print(f"\nSubnet {subnet_letter}:")
-        print(f"Subnet Mask: {details['mask']} | CIDR: /{details['cidr']}")
-        print(f"- Possible Address (2^n): {details['possible_addresses']}")
-        print(f"- Usable Address (2^n-2): {details['usable_addresses']}")
-        print(f"- Network Address: {details['network']}")
-        print(f"- Broadcast Address: {details['broadcast']}")
-        print(f"- Range of Usable Address: {details['usable_start']} - {details['usable_end']}")
-        print(f"- Number of Usable Address: {details['num_usable']}")
+        print(f"├─ Subnet Mask: {details['mask']} | CIDR: /{details['cidr']}")
+        print(f"├─ Possible Address (2^n): {details['possible_addresses']}")
+        print(f"├─ Usable Address (2^n-2): {details['usable_addresses']}")
+        print(f"├─ Network Address: {details['network']}")
+        print(f"├─ Broadcast Address: {details['broadcast']}")
+        print(f"├─ Range of Usable Address: {details['usable_start']} - {details['usable_end']}")
+        print(f"└─ Number of Usable Address: {details['num_usable']}")
+
+        # Get assignment mode for this subnet
+        while True:
+            print("\nRandomized (1) or Sequence (2)?")
+            mode = input("> ")
+            if mode in ["1", "2"]:
+                break
+            print("Invalid choice. Enter 1 for Randomized or 2 for Sequence.")
 
         # Get number of devices for this subnet
         while True:
             try:
-                num_devices = int(input(f"Enter number of devices for Subnet {subnet_letter}: "))
+                print(f"Enter number of devices for Subnet {subnet_letter}:")
+                num_devices = int(input("> "))
                 if 0 <= num_devices <= details['num_usable']:
                     break
                 print(f"Number must be between 0 and {details['num_usable']}.")
@@ -173,7 +189,7 @@ def main():
         if num_devices > 0:
             ips = generate_usable_ips(details['usable_start'], details['usable_end'], num_devices, mode)
             for j, ip in enumerate(ips, 1):
-                print(f"IP {chr(64 + j)}: {ip}")
+                print(f"   └─ IP {chr(64 + j)}: {ip}")
 
 if __name__ == "__main__":
     main()
