@@ -127,11 +127,12 @@ def subnet_details(ip, parent_cidr, cidr):
     parent_network, _ = calculate_network_broadcast(ip, parent_cidr)
     parent_octets = [int(o) for o in parent_network.split(".")]
     network_octets = [int(o) for o in network.split(".")]
-    location_value = 0
-    for i in range(parent_cidr // 8, cidr // 8 + 1):
-        if i < 4:
-            location_value = (location_value << 8) + (network_octets[i] - parent_octets[i])
-    subnet_location = location_value // subnet_step + 1
+    parent_mask = [int(o) for o in cidr_to_mask(parent_cidr).split(".")]
+    subnet_mask_octets = [int(o) for o in subnet_mask.split(".")]
+    affected_octet_idx = next(i for i in range(4) if parent_mask[i] != subnet_mask_octets[i])
+    bits_in_affected = bin(subnet_mask_octets[affected_octet_idx])[2:].count("1") - bin(parent_mask[affected_octet_idx])[2:].count("1")
+    increment = 2 ** (8 - bits_in_affected)
+    subnet_location = (network_octets[affected_octet_idx] // increment) + 1
     
     return {
         "subnet_mask": subnet_mask,
@@ -372,20 +373,22 @@ def main():
         except ValueError:
             print(f"{Fore.RED + Style.BRIGHT}✖ Invalid IP address. Use dotted decimal format (e.g., 192.168.1.0).")
     
-    default_parent_cidr = 24
     while True:
-        print(f"\n{Fore.BLUE + Style.BRIGHT}➤ Enter the Parent Network CIDR (default /24 or just press Enter for default): /")
+        print(f"\n{Fore.BLUE + Style.BRIGHT}Select the Parent Network CIDR/Subnet")
+        print(f"{Fore.WHITE}1. Class A (/8 or 255.0.0.0)")
+        print(f"{Fore.WHITE}2. Class B (/16 or 255.255.0.0)")
+        print(f"{Fore.WHITE}3. Class C (/24 or 255.255.255.0)")
+        print(f"{Fore.WHITE}4. Class D (/32 or 255.255.255.255)")
+        print(f"{Fore.BLUE + Style.BRIGHT}➤ Enter your choice (1-4):")
         try:
-            parent_cidr_input = input(f"{Fore.BLUE}> ")
-            parent_cidr = int(parent_cidr_input) if parent_cidr_input.strip() else default_parent_cidr
-            if 0 <= parent_cidr <= 32:
+            choice = input(f"{Fore.BLUE}> ")
+            if choice in ["1", "2", "3", "4"]:
+                parent_cidr = {"1": 8, "2": 16, "3": 24, "4": 32}[choice]
                 break
-            print(f"{Fore.RED + Style.BRIGHT}✖ Invalid CIDR. Enter a value between 0 and 32.")
+            print(f"{Fore.RED + Style.BRIGHT}✖ Invalid choice. Please select 1, 2, 3, or 4.")
         except EOFError:
             print(f"{Fore.RED + Style.BRIGHT}✖ Input stream closed. Exiting program.")
             return
-        except ValueError:
-            print(f"{Fore.RED + Style.BRIGHT}✖ Invalid input. Enter a numeric CIDR value or leave blank for default.")
     
     while True:
         print(f"\n{Fore.BLUE + Style.BRIGHT}➤ What type? Subnet (1) or CIDR (2):")
