@@ -138,6 +138,8 @@ GUI I.
 ```
 Department [Custom Name]
 IP Address:
+VLAN Number:
+VLAN Name:
 Number of Host:
 Total Address (Including Network and Broadcast): 
 Range of Usable IP: 
@@ -145,8 +147,7 @@ Next Available:
 Assignments:
 - Router Interface
 - Switch
-- End Devices
-    - PC [m]
+- End Devices [ x.x.x.x - x.x.x.x this is the range for the end devices]
 
 Action:
 1. Edit Department Name:
