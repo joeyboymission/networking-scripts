@@ -7,14 +7,16 @@ from colorama import init, Fore, Style
 init(autoreset=True)
 
 def validate_ip(ip_str):
+    """Validate an IPv4 address."""
     try:
         ipaddress.ip_address(ip_str)
         return True
     except ValueError:
-        print(f"{Fore.RED + Style.BRIGHT}✖ Invalid IP address format. Please use format like 192.168.1.0")
+        print(f"{Fore.RED + Style.BRIGHT}✖ Invalid IP address format (e.g., 172.30.240.0)")
         return False
 
 def validate_subnet_mask(mask_str):
+    """Validate a subnet mask (e.g., 255.255.252.0)."""
     try:
         parts = mask_str.split('.')
         if len(parts) != 4:
@@ -33,6 +35,7 @@ def validate_subnet_mask(mask_str):
         return False
 
 def mask_to_cidr(mask):
+    """Convert subnet mask to CIDR notation."""
     try:
         mask_parts = mask.split('.')
         binary = ''.join(format(int(x), '08b') for x in mask_parts)
@@ -41,24 +44,40 @@ def mask_to_cidr(mask):
         return None
 
 def calculate_subnet_details(base_ip, cidr, departments):
+    """Calculate subnet details using VLSM, inspired by C++ reference."""
     try:
         parent_network = ipaddress.ip_network(f"{base_ip}/{cidr}", strict=False)
         results = []
         
-        # Sort departments by number of hosts (largest first)
+        # Precompute subnet sizes (powers of 2)
+        subnet_sizes = [2**i for i in range(1, 15)]  # [2, 4, 8, ..., 16384]
+        
+        # Sort departments by host count (largest to smallest)
         sorted_depts = sorted(departments.items(), key=lambda x: x[1]['hosts'], reverse=True)
+        
         current_address = parent_network.network_address
         
         for dept_name, dept_info in sorted_depts:
-            # Calculate required subnet size
-            hosts_needed = dept_info['hosts'] + 2  # Including network and broadcast
-            subnet_bits = math.ceil(math.log2(hosts_needed))
+            # Calculate required addresses (hosts + network + broadcast)
+            hosts_needed = dept_info['hosts'] + 2
+            
+            # Find smallest subnet size that accommodates hosts_needed
+            subnet_size = None
+            for size in subnet_sizes:
+                if hosts_needed <= size:
+                    subnet_size = size
+                    break
+            if subnet_size is None:
+                print(f"{Fore.RED + Style.BRIGHT}✖ Host count for {dept_name} too large")
+                return None
+            
+            # Calculate CIDR
+            subnet_bits = int(math.log2(subnet_size))
             subnet_cidr = 32 - subnet_bits
-            subnet_size = 2 ** subnet_bits
             
             # Check if enough address space remains
             if int(current_address) + subnet_size > int(parent_network.broadcast_address) + 1:
-                print(f"{Fore.RED + Style.BRIGHT}✖ Not enough address space for {dept_name}")
+                print(f"{Fore.RED + Style.BRIGHT}✖ Insufficient address space for {dept_name}")
                 return None
             
             # Create subnet
@@ -67,24 +86,30 @@ def calculate_subnet_details(base_ip, cidr, departments):
             # Store department details
             dept_details = {
                 'department': dept_name,
-                'vlan_number': dept_info.get('vlan_number', None),
-                'vlan_name': dept_info.get('vlan_name', None),
+                'vlan_number': dept_info.get('vlan_number', 'None'),
+                'vlan_name': dept_info.get('vlan_name', 'None'),
                 'network_id': str(subnet.network_address),
                 'broadcast': str(subnet.broadcast_address),
                 'total_addresses': subnet_size,
-                'usable_addresses': subnet_size - 2,
+                'usable_addresses': subnet_size - 2 if subnet_size > 2 else 0,
+                'total_range': f"{subnet.network_address} - {subnet.broadcast_address}",
                 'usable_range': f"{subnet[1]} - {subnet[-2]}" if subnet_size > 2 else "N/A",
                 'router_ip': str(subnet[1]) if subnet_size > 2 else "N/A",
                 'switch_ip': str(subnet[2]) if subnet_size > 3 else "N/A",
                 'end_devices_range': f"{subnet[3]} - {subnet[-2]}" if subnet_size > 4 else "N/A",
                 'next_available': str(subnet.broadcast_address + 1),
-                'subnet_cidr': subnet_cidr  # Store specific subnet CIDR
+                'subnet_cidr': subnet_cidr,
+                'num_hosts': dept_info['hosts']
             }
             
             results.append(dept_details)
-            
-            # Move to next network
             current_address = subnet.broadcast_address + 1
+        
+        # Validate total addresses
+        total_used = sum(detail['total_addresses'] for detail in results)
+        if total_used > 2**(32 - cidr):
+            print(f"{Fore.RED + Style.BRIGHT}✖ Total addresses ({total_used}) exceed available ({2**(32-cidr)})")
+            return None
         
         return results
     except Exception as e:
@@ -94,7 +119,7 @@ def calculate_subnet_details(base_ip, cidr, departments):
 def main():
     departments = {}
     
-    # GUI A
+    # GUI A: IP Address Input
     print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}NUMBER OF HOST SUBNETTING CALCULATOR (IPv4)")
     print(f"{Fore.CYAN + Style.BRIGHT}{'═'*50}")
@@ -105,6 +130,7 @@ def main():
             base_ip = ip_input
             break
     
+    # GUI B: Subnet Mask or CIDR Selection
     print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}Select Subnet Mask or CIDR")
     print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
@@ -112,14 +138,12 @@ def main():
     print(f"{Fore.WHITE}• 2. CIDR")
     while True:
         choice = input(f"{Fore.BLUE + Style.BRIGHT}➤ Enter your choice (1-2):\n{Fore.BLUE}> ").strip()
-        
         if choice == '1':
-            # GUI B1
             print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
             print(f"{Fore.CYAN + Style.BRIGHT}Subnet Mask Input")
             print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
             while True:
-                subnet_mask = input(f"{Fore.BLUE + Style.BRIGHT}➤ Enter the Subnet Mask (format 255.255.255.255):\n{Fore.BLUE}> ").strip()
+                subnet_mask = input(f"{Fore.BLUE + Style.BRIGHT}➤ Enter the Subnet Mask (e.g., 255.255.252.0):\n{Fore.BLUE}> ").strip()
                 if validate_subnet_mask(subnet_mask):
                     cidr = mask_to_cidr(subnet_mask)
                     if cidr is not None:
@@ -130,7 +154,6 @@ def main():
                     print(f"{Fore.RED + Style.BRIGHT}✖ Invalid subnet mask format")
             break
         elif choice == '2':
-            # GUI B2
             print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
             print(f"{Fore.CYAN + Style.BRIGHT}CIDR Input")
             print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
@@ -149,40 +172,40 @@ def main():
         else:
             print(f"{Fore.RED + Style.BRIGHT}✖ Please select 1 or 2")
     
-    # GUI C
+    # GUI C: Number of Departments
     print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}Number of Departments")
     print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     while True:
         try:
-            num_depts = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ How many area/departments/partition does required:\n{Fore.BLUE}> ").strip())
+            num_depts = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ How many departments are required:\n{Fore.BLUE}> ").strip())
             if num_depts > 0:
                 break
             print(f"{Fore.RED + Style.BRIGHT}✖ Number must be positive")
         except ValueError:
             print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
     
-    # GUI D
+    # GUI D: Department Naming
     dept_names = []
     print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}Department Naming")
     print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     for i in range(num_depts):
         while True:
-            dept_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ Please name the Department ({i+1} of {num_depts}):\n{Fore.BLUE}> ").strip()
+            dept_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ Name Department ({i+1} of {num_depts}):\n{Fore.BLUE}> ").strip()
             if dept_name and dept_name not in dept_names:
                 dept_names.append(dept_name)
                 break
             print(f"{Fore.RED + Style.BRIGHT}✖ Department name must be unique and non-empty")
     
-    # GUI E
+    # GUI E: Number of Hosts per Department
     print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}Number of Hosts per Department")
     print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     for dept_name in dept_names:
         while True:
             try:
-                hosts = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ How many host on Department {dept_name}:\n{Fore.BLUE}> ").strip())
+                hosts = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ How many hosts for Department {dept_name}:\n{Fore.BLUE}> ").strip())
                 if hosts > 0:
                     departments[dept_name] = {'hosts': hosts}
                     break
@@ -190,34 +213,33 @@ def main():
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
     
-    # GUI F
+    # GUI F: VLAN Configuration
     print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.CYAN + Style.BRIGHT}VLAN Configuration")
     print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
     print(f"{Fore.WHITE}• 1. Yes")
     print(f"{Fore.WHITE}• 2. No")
     while True:
-        vlan_choice = input(f"{Fore.BLUE + Style.BRIGHT}➤ Does every department/buildings have their own VLAN? (1-2):\n{Fore.BLUE}> ").strip()
+        vlan_choice = input(f"{Fore.BLUE + Style.BRIGHT}➤ Do departments have VLANs? (1-2):\n{Fore.BLUE}> ").strip()
         if vlan_choice in ['1', '2']:
             break
         print(f"{Fore.RED + Style.BRIGHT}✖ Please select 1 or 2")
     
     if vlan_choice == '1':
-        # GUI G1 & G1.1
         print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
         print(f"{Fore.CYAN + Style.BRIGHT}VLAN Number and Name Assignment")
         print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
         for dept_name in dept_names:
             while True:
                 try:
-                    vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Input VLAN number for Department {dept_name}:\n{Fore.BLUE}Number: > ").strip())
+                    vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ VLAN number for Department {dept_name}:\n{Fore.BLUE}> ").strip())
                     if vlan_num != 1 and vlan_num > 0:
                         break
                     print(f"{Fore.RED + Style.BRIGHT}✖ VLAN number cannot be 1 and must be positive")
                 except ValueError:
                     print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
             
-            vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}Name: > ").strip()
+            vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ VLAN name (Enter for VLAN{vlan_num}):\n{Fore.BLUE}> ").strip()
             if not vlan_name:
                 vlan_name = f"VLAN{vlan_num}"
             departments[dept_name]['vlan_number'] = vlan_num
@@ -230,7 +252,6 @@ def main():
         return
     
     while True:
-        # GUI H
         os.system('cls' if os.name == 'nt' else 'clear')
         print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
         print(f"{Fore.CYAN + Style.BRIGHT}MAPPING OF IP ADDRESS SUMMARY")
@@ -242,28 +263,30 @@ def main():
         print(f"{Fore.CYAN + Style.BRIGHT}Departments")
         print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
         for i, detail in enumerate(subnet_details, 1):
-            print(f"{Fore.WHITE}• {i}. Department {Fore.GREEN}{detail['department']}")
+            print(f"{Fore.WHITE}• {i}. Department {Fore.GREEN}{detail['department']} ({detail['usable_addresses']} usable hosts)")
         print(f"{Fore.WHITE}• {len(subnet_details) + 1}. End the Program")
         
         try:
-            choice = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Please select which departments/building:\n{Fore.BLUE}> ").strip())
+            choice = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Select a department:\n{Fore.BLUE}> ").strip())
             if choice == len(subnet_details) + 1:
                 print(f"\n{Fore.CYAN + Style.BRIGHT}✔ Program ended.")
                 break
             if 1 <= choice <= len(subnet_details):
                 selected_dept = subnet_details[choice - 1]
                 
-                # GUI I
                 while True:
                     os.system('cls' if os.name == 'nt' else 'clear')
                     print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
                     print(f"{Fore.CYAN + Style.BRIGHT}Department {selected_dept['department']}")
                     print(f"{Fore.CYAN + Style.BRIGHT}{'═'*50}")
                     print(f"{Fore.WHITE}• IP Address: {Fore.GREEN}{selected_dept['network_id']}/{selected_dept['subnet_cidr']}")
-                    print(f"{Fore.WHITE}• VLAN Number: {Fore.GREEN}{selected_dept.get('vlan_number', 'N/A')}")
-                    print(f"{Fore.WHITE}• VLAN Name: {Fore.GREEN}{selected_dept.get('vlan_name', 'N/A')}")
-                    print(f"{Fore.WHITE}• Number of Host: {Fore.GREEN}{departments[selected_dept['department']]['hosts']}")
-                    print(f"{Fore.WHITE}• Total Address (Including Network and Broadcast): {Fore.GREEN}{selected_dept['total_addresses']}")
+                    print(f"{Fore.WHITE}• VLAN Number: {Fore.GREEN}{selected_dept['vlan_number']}")
+                    print(f"{Fore.WHITE}• VLAN Name: {Fore.GREEN}{selected_dept['vlan_name']}")
+                    print(f"{Fore.WHITE}• Number of Host: {Fore.GREEN}{selected_dept['num_hosts']}")
+                    print(f"{Fore.WHITE}• Total Address: {Fore.GREEN}{selected_dept['total_addresses']}")
+                    print(f"{Fore.WHITE}• Network Address: {Fore.GREEN}{selected_dept['network_id']}")
+                    print(f"{Fore.WHITE}• Broadcast Address: {Fore.GREEN}{selected_dept['broadcast']}")
+                    print(f"{Fore.WHITE}• Range of Total IP: {Fore.GREEN}{selected_dept['total_range']}")
                     print(f"{Fore.WHITE}• Range of Usable IP: {Fore.GREEN}{selected_dept['usable_range']}")
                     print(f"{Fore.WHITE}• Next Available: {Fore.GREEN}{selected_dept['next_available']}")
                     print(f"{Fore.WHITE}• Assignments:")
@@ -298,14 +321,14 @@ def main():
                         print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
                         while True:
                             try:
-                                vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Input VLAN number for Department {selected_dept['department']}:\n{Fore.BLUE}Number: > ").strip())
+                                vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Input VLAN number for Department {selected_dept['department']}:\n{Fore.BLUE}> ").strip())
                                 if vlan_num != 1 and vlan_num > 0:
                                     break
                                 print(f"{Fore.RED + Style.BRIGHT}✖ VLAN number cannot be 1 and must be positive")
                             except ValueError:
                                 print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
                         
-                        vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}Name: > ").strip()
+                        vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ VLAN name (Enter for VLAN{vlan_num}):\n{Fore.BLUE}> ").strip()
                         if not vlan_name:
                             vlan_name = f"VLAN{vlan_num}"
                         selected_dept['vlan_number'] = vlan_num
