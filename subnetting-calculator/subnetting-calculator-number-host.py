@@ -2,6 +2,7 @@ import ipaddress
 import math
 import os
 from colorama import init, Fore, Style
+import pyperclip  # Added for clipboard functionality
 
 # Initialize colorama for cross-platform color support
 init(autoreset=True)
@@ -43,6 +44,63 @@ def mask_to_cidr(mask):
     except:
         return None
 
+def cidr_to_mask(cidr):
+    """Convert CIDR notation to subnet mask."""
+    try:
+        # Create a subnet with the given CIDR
+        subnet = ipaddress.IPv4Network(f"0.0.0.0/{cidr}", strict=False)
+        # Return the subnet mask as a string
+        return str(subnet.netmask)
+    except:
+        return None
+
+def compute_intervlan_ips(subnet_details):
+    """Compute InterVLAN management IP addresses across departments with fixed offsets."""
+    # Fixed offset mapping for management IP allocation
+    # This ensures consistent and expected IP assignments
+    # dept1 -> other subnets: IP at index 3 (for DEPT2) or 4 (for DEPT3)
+    # dept2 -> other subnets: IP at index 3 (for DEPT1) or 4 (for DEPT3)
+    # dept3 -> other subnets: IP at index 4 (for DEPT1) or 3 (for DEPT2)
+    
+    # Create a map of assignments: department index -> other department index -> IP offset
+    # The IP offset is the index in the target subnet to use for management
+    assignment_map = {
+        # DEPT1's assignments in other departments
+        0: {1: 3, 2: 4},  # DEPT1 gets IP at index 3 in DEPT2, index 4 in DEPT3
+        # DEPT2's assignments in other departments
+        1: {0: 3, 2: 3},  # DEPT2 gets IP at index 3 in DEPT1, index 3 in DEPT3
+        # DEPT3's assignments in other departments
+        2: {0: 4, 1: 3}   # DEPT3 gets IP at index 4 in DEPT1, index 3 in DEPT2
+    }
+    
+    # Create an intervlan map for each department
+    for i, dept in enumerate(subnet_details):
+        dept_name = dept['department']
+        dept['intervlan_map'] = {}
+        
+        # Skip if this department doesn't have mappings
+        if i not in assignment_map:
+            continue
+        
+        # For each other department
+        for j, other_dept in enumerate(subnet_details):
+            if i != j:  # Skip self
+                other_name = other_dept['department']
+                other_subnet = other_dept['subnet_obj']
+                
+                # Get the IP offset from the assignment map
+                if j in assignment_map[i]:
+                    ip_index = assignment_map[i][j]
+                    
+                    # Ensure the subnet has enough addresses
+                    if ip_index < other_subnet.num_addresses - 1:
+                        mgmt_ip = str(other_subnet[ip_index])
+                        dept['intervlan_map'][other_name] = {
+                            'ip': mgmt_ip,
+                            'mask': other_dept['subnet_mask'],
+                            'vlan': other_dept['vlan_number']
+                        }
+
 def calculate_subnet_details(base_ip, cidr, departments):
     """Calculate subnet details using VLSM, inspired by C++ reference."""
     try:
@@ -82,6 +140,7 @@ def calculate_subnet_details(base_ip, cidr, departments):
             
             # Create subnet
             subnet = ipaddress.ip_network(f"{current_address}/{subnet_cidr}", strict=False)
+            subnet_mask = cidr_to_mask(subnet_cidr)
             
             # Store department details
             dept_details = {
@@ -99,7 +158,10 @@ def calculate_subnet_details(base_ip, cidr, departments):
                 'end_devices_range': f"{subnet[3]} - {subnet[-2]}" if subnet_size > 4 else "N/A",
                 'next_available': str(subnet.broadcast_address + 1),
                 'subnet_cidr': subnet_cidr,
-                'num_hosts': dept_info['hosts']
+                'subnet_mask': subnet_mask,
+                'num_hosts': dept_info['hosts'],
+                'show_intervlan': False,
+                'subnet_obj': subnet  # Store the subnet object for IP calculations
             }
             
             results.append(dept_details)
@@ -111,13 +173,82 @@ def calculate_subnet_details(base_ip, cidr, departments):
             print(f"{Fore.RED + Style.BRIGHT}✖ Total addresses ({total_used}) exceed available ({2**(32-cidr)})")
             return None
         
+        # Compute InterVLAN management IPs for each department
+        compute_intervlan_ips(results)
+        
         return results
     except Exception as e:
         print(f"{Fore.RED + Style.BRIGHT}✖ Error in subnet calculation: {e}")
         return None
 
+def generate_dept_details_text(selected_dept, subnet_details=None):
+    """Generate text representation of department details for display and clipboard."""
+    details = [
+        f"Department {selected_dept['department']}",
+        f"IP Address: {selected_dept['network_id']}/{selected_dept['subnet_cidr']}",
+        f"Subnet Mask: {selected_dept['subnet_mask']}",
+        f"VLAN Number: {selected_dept['vlan_number']}",
+        f"VLAN Name: {selected_dept['vlan_name']}",
+        f"Number of Host: {selected_dept['num_hosts']}",
+        f"Total Address: {selected_dept['total_addresses']}",
+        f"Network Address: {selected_dept['network_id']}",
+        f"Broadcast Address: {selected_dept['broadcast']}",
+        f"Range of Total IP: {selected_dept['total_range']}",
+        f"Range of Usable IP: {selected_dept['usable_range']}",
+        f"Next Available: {selected_dept['next_available']}",
+        f"Assignments:"
+    ]
+    
+    # Add router interface
+    details.append(f"  - Router Interface: {selected_dept['router_ip']}")
+    
+    # For the switch, check if we need to show InterVLAN details
+    if selected_dept['show_intervlan'] and 'intervlan_map' in selected_dept:
+        details.append(f"  - Switch: {selected_dept['switch_ip']}")
+        details.append(f"    - Inter VLAN Management")
+        
+        # Add management IPs for other departments
+        for other_dept, management in selected_dept['intervlan_map'].items():
+            vlan = management['vlan']
+            ip = management['ip']
+            mask = management['mask']
+            details.append(f"    - Switch {other_dept} (VLAN{vlan} | {vlan}): {ip} {mask}")
+        
+        # Calculate new start of end device range
+        # Find the highest IP used for management and add 1
+        highest_index = 4  # After router, switch, and typical management IPs
+        subnet = selected_dept['subnet_obj']
+        
+        if highest_index < subnet.num_addresses - 1:
+            new_start = subnet[highest_index + 1]
+            details.append(f"  - End Devices: {new_start} - {subnet[-2]}")
+        else:
+            details.append(f"  - End Devices: {selected_dept['end_devices_range']}")
+    else:
+        # Standard switch and end devices display
+        details.append(f"  - Switch: {selected_dept['switch_ip']}")
+        details.append(f"  - End Devices: {selected_dept['end_devices_range']}")
+    
+    return "\n".join(details)
+
+def generate_router_gateway_text(subnet_details):
+    """Generate text of all router gateway addresses for clipboard."""
+    gateway_details = ["Router Gateway"]
+    
+    for dept in subnet_details:
+        dept_name = dept['department']
+        vlan_num = dept['vlan_number']
+        router_ip = dept['router_ip']
+        subnet_mask = dept['subnet_mask']
+        
+        gateway_details.append(f"{dept_name} VLAN{vlan_num}: {router_ip} {subnet_mask}")
+    
+    return "\n".join(gateway_details)
+
 def main():
     departments = {}
+    # Default global setting for InterVLAN management
+    global_intervlan_enabled = False
     
     # GUI A: IP Address Input
     print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
@@ -264,86 +395,198 @@ def main():
         print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
         for i, detail in enumerate(subnet_details, 1):
             print(f"{Fore.WHITE}• {i}. Department {Fore.GREEN}{detail['department']} ({detail['usable_addresses']} usable hosts)")
-        print(f"{Fore.WHITE}• {len(subnet_details) + 1}. End the Program")
+        
+        # Add action section with alphabetical options
+        print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+        print(f"{Fore.CYAN + Style.BRIGHT}Action")
+        print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+        print(f"{Fore.WHITE}• A. Router Gateway Address (copy to clipboard)")
+        
+        # Only show InterVLAN toggle if VLANs are enabled
+        if vlan_choice == '1':
+            status = "ENABLED" if global_intervlan_enabled else "DISABLED"
+            print(f"{Fore.WHITE}• B. Toggle InterVLAN Management ({Fore.YELLOW}{status}{Fore.WHITE})")
+            print(f"{Fore.WHITE}• C. End the Program")
+            option_range = "A-C"
+        else:
+            print(f"{Fore.WHITE}• B. End the Program")
+            option_range = "A-B"
         
         try:
-            choice = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Select a department:\n{Fore.BLUE}> ").strip())
-            if choice == len(subnet_details) + 1:
-                print(f"\n{Fore.CYAN + Style.BRIGHT}✔ Program ended.")
-                break
-            if 1 <= choice <= len(subnet_details):
-                selected_dept = subnet_details[choice - 1]
+            choice = input(f"{Fore.BLUE + Style.BRIGHT}➤ Select a department or action ({option_range}):\n{Fore.BLUE}> ").strip()
+            
+            # Handle alphabetical choices
+            if choice.lower() == 'a':
+                # Copy router gateway addresses to clipboard
+                gateway_text = generate_router_gateway_text(subnet_details)
+                try:
+                    pyperclip.copy(gateway_text)
+                    print(f"\n{Fore.GREEN + Style.BRIGHT}✔ Router Gateway addresses copied to clipboard!")
+                    print(f"{Fore.WHITE}{gateway_text}")
+                    input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                except Exception as e:
+                    print(f"\n{Fore.RED + Style.BRIGHT}✖ Failed to copy to clipboard: {e}")
+                    input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                continue
                 
-                while True:
-                    os.system('cls' if os.name == 'nt' else 'clear')
-                    print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
-                    print(f"{Fore.CYAN + Style.BRIGHT}Department {selected_dept['department']}")
-                    print(f"{Fore.CYAN + Style.BRIGHT}{'═'*50}")
-                    print(f"{Fore.WHITE}• IP Address: {Fore.GREEN}{selected_dept['network_id']}/{selected_dept['subnet_cidr']}")
-                    print(f"{Fore.WHITE}• VLAN Number: {Fore.GREEN}{selected_dept['vlan_number']}")
-                    print(f"{Fore.WHITE}• VLAN Name: {Fore.GREEN}{selected_dept['vlan_name']}")
-                    print(f"{Fore.WHITE}• Number of Host: {Fore.GREEN}{selected_dept['num_hosts']}")
-                    print(f"{Fore.WHITE}• Total Address: {Fore.GREEN}{selected_dept['total_addresses']}")
-                    print(f"{Fore.WHITE}• Network Address: {Fore.GREEN}{selected_dept['network_id']}")
-                    print(f"{Fore.WHITE}• Broadcast Address: {Fore.GREEN}{selected_dept['broadcast']}")
-                    print(f"{Fore.WHITE}• Range of Total IP: {Fore.GREEN}{selected_dept['total_range']}")
-                    print(f"{Fore.WHITE}• Range of Usable IP: {Fore.GREEN}{selected_dept['usable_range']}")
-                    print(f"{Fore.WHITE}• Next Available: {Fore.GREEN}{selected_dept['next_available']}")
-                    print(f"{Fore.WHITE}• Assignments:")
-                    print(f"{Fore.WHITE}  └─ Router Interface: {Fore.GREEN}{selected_dept['router_ip']}")
-                    print(f"{Fore.WHITE}  └─ Switch: {Fore.GREEN}{selected_dept['switch_ip']}")
-                    print(f"{Fore.WHITE}  └─ End Devices: {Fore.GREEN}{selected_dept['end_devices_range']}")
-                    print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                    print(f"{Fore.CYAN + Style.BRIGHT}Action")
-                    print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                    print(f"{Fore.WHITE}• 1. Edit Department Name")
-                    print(f"{Fore.WHITE}• 2. Edit VLAN")
-                    print(f"{Fore.WHITE}• 3. Return to Map of IP Address Summary")
+            elif choice.lower() == 'b' and vlan_choice == '1':
+                # Toggle global InterVLAN setting
+                global_intervlan_enabled = not global_intervlan_enabled
+                
+                # Apply to all departments
+                for dept in subnet_details:
+                    dept['show_intervlan'] = global_intervlan_enabled
+                
+                status = "enabled" if global_intervlan_enabled else "disabled"
+                print(f"\n{Fore.GREEN + Style.BRIGHT}✔ InterVLAN Management {status} for all departments!")
+                input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                continue
+                
+            elif (choice.lower() == 'b' and vlan_choice != '1') or (choice.lower() == 'c' and vlan_choice == '1'):
+                # Confirm before ending the program
+                confirm = input(f"{Fore.YELLOW + Style.BRIGHT}➤ Are you sure you want to end the program? (yes/no):\n{Fore.BLUE}> ").strip().lower()
+                if confirm in ['yes', 'y']:
+                    print(f"\n{Fore.CYAN + Style.BRIGHT}✔ Program ended.")
+                    break
+                continue
+            
+            # Handle numeric department choices
+            try:
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(subnet_details):
+                    selected_dept = subnet_details[choice_num - 1]
                     
-                    action = input(f"{Fore.BLUE + Style.BRIGHT}➤ Select an action (1-3):\n{Fore.BLUE}> ").strip()
-                    
-                    if action == '1':
-                        print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                        print(f"{Fore.CYAN + Style.BRIGHT}Edit Department Name")
-                        print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                        while True:
-                            new_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ Please name the Department:\n{Fore.BLUE}> ").strip()
-                            if new_name and new_name not in [d['department'] for d in subnet_details if d != selected_dept]:
-                                old_name = selected_dept['department']
-                                selected_dept['department'] = new_name
-                                departments[new_name] = departments.pop(old_name)
-                                break
-                            print(f"{Fore.RED + Style.BRIGHT}✖ Department name must be unique and non-empty")
-                    
-                    elif action == '2' and vlan_choice == '1':
-                        print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                        print(f"{Fore.CYAN + Style.BRIGHT}Edit VLAN")
-                        print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
-                        while True:
-                            try:
-                                vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Input VLAN number for Department {selected_dept['department']}:\n{Fore.BLUE}> ").strip())
-                                if vlan_num != 1 and vlan_num > 0:
-                                    break
-                                print(f"{Fore.RED + Style.BRIGHT}✖ VLAN number cannot be 1 and must be positive")
-                            except ValueError:
-                                print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
+                    while True:
+                        os.system('cls' if os.name == 'nt' else 'clear')
+                        print(f"\n{Fore.CYAN + Style.BRIGHT}{'═'*50}")
+                        print(f"{Fore.CYAN + Style.BRIGHT}Department {selected_dept['department']}")
+                        print(f"{Fore.CYAN + Style.BRIGHT}{'═'*50}")
+                        print(f"{Fore.WHITE}• IP Address: {Fore.GREEN}{selected_dept['network_id']}/{selected_dept['subnet_cidr']}")
+                        print(f"{Fore.WHITE}• Subnet Mask: {Fore.GREEN}{selected_dept['subnet_mask']}")
+                        print(f"{Fore.WHITE}• VLAN Number: {Fore.GREEN}{selected_dept['vlan_number']}")
+                        print(f"{Fore.WHITE}• VLAN Name: {Fore.GREEN}{selected_dept['vlan_name']}")
+                        print(f"{Fore.WHITE}• Number of Host: {Fore.GREEN}{selected_dept['num_hosts']}")
+                        print(f"{Fore.WHITE}• Total Address: {Fore.GREEN}{selected_dept['total_addresses']}")
+                        print(f"{Fore.WHITE}• Network Address: {Fore.GREEN}{selected_dept['network_id']}")
+                        print(f"{Fore.WHITE}• Broadcast Address: {Fore.GREEN}{selected_dept['broadcast']}")
+                        print(f"{Fore.WHITE}• Range of Total IP: {Fore.GREEN}{selected_dept['total_range']}")
+                        print(f"{Fore.WHITE}• Range of Usable IP: {Fore.GREEN}{selected_dept['usable_range']}")
+                        print(f"{Fore.WHITE}• Next Available: {Fore.GREEN}{selected_dept['next_available']}")
+                        print(f"{Fore.WHITE}• Assignments:")
                         
-                        vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ VLAN name (Enter for VLAN{vlan_num}):\n{Fore.BLUE}> ").strip()
-                        if not vlan_name:
-                            vlan_name = f"VLAN{vlan_num}"
-                        selected_dept['vlan_number'] = vlan_num
-                        selected_dept['vlan_name'] = vlan_name
-                        departments[selected_dept['department']]['vlan_number'] = vlan_num
-                        departments[selected_dept['department']]['vlan_name'] = vlan_name
-                    
-                    elif action == '3':
-                        break
-                    else:
-                        print(f"{Fore.RED + Style.BRIGHT}✖ Invalid action")
-            else:
-                print(f"{Fore.RED + Style.BRIGHT}✖ Invalid selection")
+                        # Show router interface
+                        print(f"{Fore.WHITE}  └─ Router Interface: {Fore.GREEN}{selected_dept['router_ip']}")
+                        
+                        # Show switch with possible InterVLAN details
+                        if selected_dept['show_intervlan'] and vlan_choice == '1':
+                            print(f"{Fore.WHITE}  └─ Switch: {Fore.GREEN}{selected_dept['switch_ip']}")
+                            print(f"{Fore.WHITE}    └─ Inter VLAN Management")
+                            
+                            # Display management IPs for other departments
+                            if 'intervlan_map' in selected_dept:
+                                for other_dept, management in selected_dept['intervlan_map'].items():
+                                    vlan = management['vlan']
+                                    ip = management['ip']
+                                    mask = management['mask']
+                                    print(f"{Fore.WHITE}    └─ Switch {other_dept} (VLAN{vlan} | {vlan}): {Fore.GREEN}{ip} {mask}")
+                            
+                            # Calculate new end devices range
+                            highest_index = 4  # After router, switch, and typical management IPs
+                            subnet = selected_dept['subnet_obj']
+                            
+                            if highest_index < subnet.num_addresses - 1:
+                                new_start = subnet[highest_index + 1]
+                                print(f"{Fore.WHITE}  └─ End Devices: {Fore.GREEN}{new_start} - {subnet[-2]}")
+                            else:
+                                print(f"{Fore.WHITE}  └─ End Devices: {Fore.GREEN}{selected_dept['end_devices_range']}")
+                        else:
+                            # Standard display without InterVLAN
+                            print(f"{Fore.WHITE}  └─ Switch: {Fore.GREEN}{selected_dept['switch_ip']}")
+                            print(f"{Fore.WHITE}  └─ End Devices: {Fore.GREEN}{selected_dept['end_devices_range']}")
+                        
+                        print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                        print(f"{Fore.CYAN + Style.BRIGHT}Action")
+                        print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                        print(f"{Fore.WHITE}• 1. Edit Department Name")
+                        print(f"{Fore.WHITE}• 2. Edit VLAN")
+                        print(f"{Fore.WHITE}• 3. Copy to Clipboard")
+                        
+                        # InterVLAN option (only if VLANs are enabled)
+                        if vlan_choice == '1':
+                            intervlan_action = "Hide" if selected_dept['show_intervlan'] else "Show"
+                            print(f"{Fore.WHITE}• 4. {intervlan_action} InterVLAN Management (This Department Only)")
+                            print(f"{Fore.WHITE}• 5. Return to Map of IP Address Summary")
+                            action_range = "1-5"
+                        else:
+                            print(f"{Fore.WHITE}• 4. Return to Map of IP Address Summary")
+                            action_range = "1-4"
+                        
+                        action = input(f"{Fore.BLUE + Style.BRIGHT}➤ Select an action ({action_range}):\n{Fore.BLUE}> ").strip()
+                        
+                        if action == '1':
+                            print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                            print(f"{Fore.CYAN + Style.BRIGHT}Edit Department Name")
+                            print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                            while True:
+                                new_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ Please name the Department:\n{Fore.BLUE}> ").strip()
+                                if new_name and new_name not in [d['department'] for d in subnet_details if d != selected_dept]:
+                                    old_name = selected_dept['department']
+                                    selected_dept['department'] = new_name
+                                    departments[new_name] = departments.pop(old_name)
+                                    break
+                                print(f"{Fore.RED + Style.BRIGHT}✖ Department name must be unique and non-empty")
+                        
+                        elif action == '2' and vlan_choice == '1':
+                            print(f"\n{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                            print(f"{Fore.CYAN + Style.BRIGHT}Edit VLAN")
+                            print(f"{Fore.YELLOW + Style.BRIGHT}{'─'*50}")
+                            while True:
+                                try:
+                                    vlan_num = int(input(f"{Fore.BLUE + Style.BRIGHT}➤ Input VLAN number for Department {selected_dept['department']}:\n{Fore.BLUE}> ").strip())
+                                    if vlan_num != 1 and vlan_num > 0:
+                                        break
+                                    print(f"{Fore.RED + Style.BRIGHT}✖ VLAN number cannot be 1 and must be positive")
+                                except ValueError:
+                                    print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
+                            
+                            vlan_name = input(f"{Fore.BLUE + Style.BRIGHT}➤ VLAN name (Enter for VLAN{vlan_num}):\n{Fore.BLUE}> ").strip()
+                            if not vlan_name:
+                                vlan_name = f"VLAN{vlan_num}"
+                            selected_dept['vlan_number'] = vlan_num
+                            selected_dept['vlan_name'] = vlan_name
+                            departments[selected_dept['department']]['vlan_number'] = vlan_num
+                            departments[selected_dept['department']]['vlan_name'] = vlan_name
+                        
+                        elif action == '3':
+                            # Copy department details to clipboard
+                            details_text = generate_dept_details_text(selected_dept, subnet_details if selected_dept['show_intervlan'] else None)
+                            try:
+                                pyperclip.copy(details_text)
+                                print(f"\n{Fore.GREEN + Style.BRIGHT}✔ Department details copied to clipboard!")
+                                input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                            except Exception as e:
+                                print(f"\n{Fore.RED + Style.BRIGHT}✖ Failed to copy to clipboard: {e}")
+                                input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                        
+                        elif action == '4' and vlan_choice == '1':
+                            # Toggle InterVLAN display for this department only
+                            selected_dept['show_intervlan'] = not selected_dept['show_intervlan']
+                            status = "enabled" if selected_dept['show_intervlan'] else "disabled"
+                            print(f"\n{Fore.GREEN + Style.BRIGHT}✔ InterVLAN Management {status} for {selected_dept['department']} department only!")
+                            input(f"{Fore.BLUE + Style.BRIGHT}Press Enter to continue...")
+                        
+                        elif (action == '4' and vlan_choice != '1') or (action == '5' and vlan_choice == '1'):
+                            # Return to map summary
+                            break
+                        
+                        else:
+                            print(f"{Fore.RED + Style.BRIGHT}✖ Invalid action")
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}✖ Invalid selection")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}✖ Invalid selection. Please enter a number or letter.")
         except ValueError:
-            print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid number")
+            print(f"{Fore.RED + Style.BRIGHT}✖ Please enter a valid selection")
 
 if __name__ == "__main__":
     main()
